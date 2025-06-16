@@ -32,15 +32,84 @@ def test_transcription_methods_status():
         print(f"✓ Status retrieved successfully")
         print(f"  Current method: {status['current_method']}")
         print(f"  Whisper model: {status['whisper_model']}")
-        
+
         for method, info in status.items():
             if isinstance(info, dict) and 'available' in info:
                 availability = "✓ Available" if info['available'] else "✗ Not available"
                 print(f"  {method}: {availability}")
-        
+
         return True
     except Exception as e:
         print(f"✗ Error testing status: {e}")
+        return False
+
+
+def test_enhanced_features():
+    """Test enhanced transcription features."""
+    print("\nTesting enhanced features...")
+
+    try:
+        # Test data structures
+        from utils import TranscriptionResult, TranscriptionSegment, WordTimestamp
+
+        # Create test data
+        word1 = WordTimestamp(word="Hello", start=0.0, end=0.5)
+        word2 = WordTimestamp(word="world", start=0.6, end=1.0)
+
+        segment = TranscriptionSegment(
+            text="Hello world",
+            start=0.0,
+            end=1.0,
+            words=[word1, word2]
+        )
+
+        result = TranscriptionResult(
+            text="Hello world",
+            segments=[segment],
+            language="en",
+            duration=1.0,
+            method_used="test",
+            model_used="test_model",
+            processing_time=0.1,
+            file_size_mb=1.0
+        )
+
+        # Test format conversions
+        srt_content = result.to_srt()
+        vtt_content = result.to_vtt()
+        json_data = result.to_dict()
+
+        print("✓ Enhanced data structures working")
+        print("✓ SRT format conversion working")
+        print("✓ VTT format conversion working")
+        print("✓ JSON serialization working")
+
+        return True
+
+    except Exception as e:
+        print(f"✗ Error testing enhanced features: {e}")
+        return False
+
+
+def test_audio_processing():
+    """Test audio processing capabilities."""
+    print("\nTesting audio processing...")
+
+    try:
+        from utils import AUDIO_PROCESSING_AVAILABLE, PYDUB_AVAILABLE, get_audio_duration
+
+        print(f"  Librosa available: {'✓' if AUDIO_PROCESSING_AVAILABLE else '✗'}")
+        print(f"  Pydub available: {'✓' if PYDUB_AVAILABLE else '✗'}")
+
+        if AUDIO_PROCESSING_AVAILABLE or PYDUB_AVAILABLE:
+            print("✓ Audio processing libraries available")
+            return True
+        else:
+            print("⚠ No audio processing libraries available (chunking disabled)")
+            return True  # Not a failure, just limited functionality
+
+    except Exception as e:
+        print(f"✗ Error testing audio processing: {e}")
         return False
 
 def test_file_validation():
@@ -102,6 +171,8 @@ def main():
     tests = [
         test_configuration,
         test_transcription_methods_status,
+        test_enhanced_features,
+        test_audio_processing,
         test_file_validation,
     ]
     

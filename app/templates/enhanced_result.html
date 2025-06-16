@@ -1,0 +1,217 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Enhanced Transcription Result</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}">
+</head>
+<body>
+    <div class="container result-container">
+        <h1>Enhanced Transcription Complete</h1>
+        <p class="description">Audio file: <strong>{{ filename }}</strong></p>
+        
+        <!-- Transcription Metadata -->
+        <div class="metadata-box">
+            <h2>Transcription Details</h2>
+            <div class="metadata-grid">
+                <div class="metadata-item">
+                    <span class="label">Method:</span>
+                    <span class="value">{{ result.method_used }}</span>
+                </div>
+                <div class="metadata-item">
+                    <span class="label">Model:</span>
+                    <span class="value">{{ result.model_used }}</span>
+                </div>
+                <div class="metadata-item">
+                    <span class="label">Duration:</span>
+                    <span class="value">{{ "%.1f"|format(result.duration) }}s</span>
+                </div>
+                <div class="metadata-item">
+                    <span class="label">Processing Time:</span>
+                    <span class="value">{{ "%.2f"|format(result.processing_time) }}s</span>
+                </div>
+                <div class="metadata-item">
+                    <span class="label">Language:</span>
+                    <span class="value">{{ result.language or 'Auto-detected' }}</span>
+                </div>
+                <div class="metadata-item">
+                    <span class="label">File Size:</span>
+                    <span class="value">{{ "%.1f"|format(result.file_size_mb) }}MB</span>
+                </div>
+            </div>
+        </div>
+        
+        <!-- Full Transcription -->
+        <div class="transcription-box">
+            <h2>Full Transcription</h2>
+            <div class="transcription-content">{{ result.text }}</div>
+        </div>
+        
+        <!-- Timeline View (if segments available) -->
+        {% if result.segments %}
+        <div class="timeline-box">
+            <h2>Timeline View</h2>
+            <div class="timeline-controls">
+                <button id="play-pause-btn" class="timeline-btn">▶ Play</button>
+                <button id="show-words-btn" class="timeline-btn">Show Word Timestamps</button>
+                <input type="range" id="timeline-slider" min="0" max="{{ result.duration }}" value="0" step="0.1">
+                <span id="current-time">0:00</span> / <span id="total-time">{{ (result.duration // 60)|int }}:{{ "%02d"|format((result.duration % 60)|int) }}</span>
+            </div>
+            
+            <div class="segments-container" id="segments-container">
+                {% for segment in result.segments %}
+                <div class="segment" 
+                     data-start="{{ segment.start }}" 
+                     data-end="{{ segment.end }}"
+                     onclick="jumpToTime({{ segment.start }})">
+                    <div class="segment-time">
+                        {{ (segment.start // 60)|int }}:{{ "%02d"|format((segment.start % 60)|int) }} - 
+                        {{ (segment.end // 60)|int }}:{{ "%02d"|format((segment.end % 60)|int) }}
+                    </div>
+                    <div class="segment-text">{{ segment.text }}</div>
+                    
+                    {% if segment.words %}
+                    <div class="words-container" style="display: none;">
+                        {% for word in segment.words %}
+                        <span class="word" 
+                              data-start="{{ word.start }}" 
+                              data-end="{{ word.end }}"
+                              onclick="jumpToTime({{ word.start }}); event.stopPropagation();">
+                            {{ word.word }}
+                        </span>
+                        {% endfor %}
+                    </div>
+                    {% endif %}
+                </div>
+                {% endfor %}
+            </div>
+        </div>
+        {% endif %}
+        
+        <!-- Download Options -->
+        <div class="download-section">
+            <h2>Download Options</h2>
+            <div class="download-grid">
+                <a href="{{ url_for('main.download_enhanced_file', filename=filename, format='txt') }}" 
+                   class="download-btn">
+                    📄 Text File (.txt)
+                </a>
+                
+                {% if result.segments %}
+                <a href="{{ url_for('main.download_enhanced_file', filename=filename, format='json') }}" 
+                   class="download-btn">
+                    📊 Detailed JSON (.json)
+                </a>
+                
+                <a href="{{ url_for('main.download_enhanced_file', filename=filename, format='srt') }}" 
+                   class="download-btn">
+                    🎬 Subtitles (.srt)
+                </a>
+                
+                <a href="{{ url_for('main.download_enhanced_file', filename=filename, format='vtt') }}" 
+                   class="download-btn">
+                    🌐 WebVTT (.vtt)
+                </a>
+                {% endif %}
+            </div>
+        </div>
+        
+        <!-- Actions -->
+        <div class="actions">
+            <a href="{{ url_for('main.index') }}" class="back-btn">Transcribe Another File</a>
+        </div>
+    </div>
+    
+    <script>
+        // Timeline functionality
+        let currentTime = 0;
+        let isPlaying = false;
+        let playInterval = null;
+        
+        const playPauseBtn = document.getElementById('play-pause-btn');
+        const timelineSlider = document.getElementById('timeline-slider');
+        const currentTimeSpan = document.getElementById('current-time');
+        const showWordsBtn = document.getElementById('show-words-btn');
+        const segmentsContainer = document.getElementById('segments-container');
+        
+        function formatTime(seconds) {
+            const minutes = Math.floor(seconds / 60);
+            const secs = Math.floor(seconds % 60);
+            return `${minutes}:${secs.toString().padStart(2, '0')}`;
+        }
+        
+        function updateTimeline() {
+            currentTimeSpan.textContent = formatTime(currentTime);
+            timelineSlider.value = currentTime;
+            
+            // Highlight current segment
+            const segments = document.querySelectorAll('.segment');
+            segments.forEach(segment => {
+                const start = parseFloat(segment.dataset.start);
+                const end = parseFloat(segment.dataset.end);
+                
+                if (currentTime >= start && currentTime <= end) {
+                    segment.classList.add('active');
+                } else {
+                    segment.classList.remove('active');
+                }
+            });
+        }
+        
+        function jumpToTime(time) {
+            currentTime = time;
+            updateTimeline();
+        }
+        
+        function togglePlayPause() {
+            if (isPlaying) {
+                clearInterval(playInterval);
+                playPauseBtn.textContent = '▶ Play';
+                isPlaying = false;
+            } else {
+                playInterval = setInterval(() => {
+                    currentTime += 0.1;
+                    if (currentTime >= {{ result.duration }}) {
+                        currentTime = {{ result.duration }};
+                        togglePlayPause();
+                    }
+                    updateTimeline();
+                }, 100);
+                playPauseBtn.textContent = '⏸ Pause';
+                isPlaying = true;
+            }
+        }
+        
+        function toggleWordTimestamps() {
+            const wordsContainers = document.querySelectorAll('.words-container');
+            const isVisible = wordsContainers[0]?.style.display !== 'none';
+            
+            wordsContainers.forEach(container => {
+                container.style.display = isVisible ? 'none' : 'block';
+            });
+            
+            showWordsBtn.textContent = isVisible ? 'Show Word Timestamps' : 'Hide Word Timestamps';
+        }
+        
+        // Event listeners
+        if (playPauseBtn) {
+            playPauseBtn.addEventListener('click', togglePlayPause);
+        }
+        
+        if (timelineSlider) {
+            timelineSlider.addEventListener('input', (e) => {
+                currentTime = parseFloat(e.target.value);
+                updateTimeline();
+            });
+        }
+        
+        if (showWordsBtn) {
+            showWordsBtn.addEventListener('click', toggleWordTimestamps);
+        }
+        
+        // Initialize
+        updateTimeline();
+    </script>
+</body>
+</html>

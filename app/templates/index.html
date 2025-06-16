@@ -22,18 +22,41 @@
         {% endwith %}
         
         <div class="upload-container">
-            <form action="{{ url_for('main.upload_file') }}" method="post" enctype="multipart/form-data" id="upload-form">
+            <form action="{{ url_for('main.enhanced_upload') }}" method="post" enctype="multipart/form-data" id="upload-form">
                 <div class="file-input">
                     <label for="audio_file">Choose an audio file</label>
                     <input type="file" id="audio_file" name="audio_file" accept=".mp3,.wav,.m4a,.flac,.ogg,.webm,.mp4">
                     <p class="file-name" id="file-name">No file selected</p>
                     <p class="file-size" id="file-size"></p>
+                    <div class="file-info" id="file-info" style="display: none;">
+                        <p class="info-item">Duration: <span id="duration">-</span></p>
+                        <p class="info-item">Estimated processing time: <span id="est-time">-</span></p>
+                        <p class="info-item">Will use chunking: <span id="chunking">-</span></p>
+                    </div>
+                </div>
+
+                <div class="transcription-options">
+                    <h3>Transcription Options</h3>
+                    <div class="options-grid">
+                        <label class="option-item">
+                            <input type="checkbox" id="enable-timestamps" checked>
+                            <span>Include timestamps</span>
+                        </label>
+                        <label class="option-item">
+                            <input type="checkbox" id="enable-word-timestamps">
+                            <span>Word-level timestamps</span>
+                        </label>
+                    </div>
                 </div>
 
                 <button type="submit" class="submit-btn" id="submit-btn">
-                    <span class="btn-text">Transcribe</span>
+                    <span class="btn-text">Enhanced Transcribe</span>
                     <span class="btn-loading" style="display: none;">Processing...</span>
                 </button>
+
+                <div class="legacy-option">
+                    <a href="#" id="basic-transcribe" class="basic-link">Use Basic Transcription</a>
+                </div>
             </form>
 
             <div class="progress-container" id="progress-container" style="display: none;">
@@ -41,6 +64,7 @@
                     <div class="progress-fill" id="progress-fill"></div>
                 </div>
                 <p class="progress-text" id="progress-text">Processing your audio file...</p>
+                <p class="progress-detail" id="progress-detail"></p>
             </div>
         </div>
         
