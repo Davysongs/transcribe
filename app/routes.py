@@ -202,11 +202,32 @@ def enhanced_upload():
             return redirect(url_for('main.index'))
 
         # Enhanced transcription
-        result = transcribe_audio_enhanced(
-            file_path,
-            current_app.config['TRANSCRIPTION_FOLDER'],
-            current_app.config['CHUNKS_FOLDER']
-        )
+        try:
+            result = transcribe_audio_enhanced(
+                file_path,
+                current_app.config['TRANSCRIPTION_FOLDER'],
+                current_app.config['CHUNKS_FOLDER']
+            )
+            logger.info(f"Enhanced transcription completed successfully for {original_filename}")
+        except Exception as transcription_error:
+            logger.error(f"Enhanced transcription failed: {transcription_error}")
+            # Fallback to basic transcription
+            logger.info("Falling back to basic transcription")
+            text, transcription_path, transcription_filename = transcribe_audio(
+                file_path,
+                current_app.config['TRANSCRIPTION_FOLDER']
+            )
+
+            # Create a basic result object for compatibility
+            from app.utils import TranscriptionResult, TranscriptionSegment
+            result = TranscriptionResult(
+                text=text,
+                segments=[TranscriptionSegment(text=text, start=0.0, end=0.0)],
+                method_used="fallback",
+                model_used="unknown",
+                processing_time=0.0,
+                file_size_mb=os.path.getsize(file_path) / (1024 * 1024) if os.path.exists(file_path) else 0.0
+            )
 
         # Clean up uploaded file after successful transcription
         try:
@@ -247,6 +268,11 @@ def download_enhanced_file(filename, format):
         safe_filename = secure_filename(filename)
         base_name = os.path.splitext(safe_filename)[0]
 
+        logger.info(f"Download request for file: {safe_filename}, format: {format}")
+        logger.info(f"Base name: {base_name}")
+        logger.info(f"Transcription folder: {current_app.config['TRANSCRIPTION_FOLDER']}")
+
+        # Determine file path based on format
         if format == 'txt':
             file_path = os.path.join(current_app.config['TRANSCRIPTION_FOLDER'], f"{base_name}.txt")
         elif format == 'json':
@@ -256,13 +282,27 @@ def download_enhanced_file(filename, format):
         elif format == 'vtt':
             file_path = os.path.join(current_app.config['TRANSCRIPTION_FOLDER'], f"{base_name}.vtt")
         else:
+            logger.error(f"Invalid format requested: {format}")
             flash('Invalid format requested', 'error')
             return redirect(url_for('main.index'))
 
+        logger.info(f"Looking for file at: {file_path}")
+
+        # Check if file exists
         if not os.path.exists(file_path):
-            flash('File not found', 'error')
+            # List available files for debugging
+            transcription_folder = current_app.config['TRANSCRIPTION_FOLDER']
+            available_files = []
+            if os.path.exists(transcription_folder):
+                available_files = os.listdir(transcription_folder)
+
+            logger.error(f"File not found: {file_path}")
+            logger.error(f"Available files in transcription folder: {available_files}")
+
+            flash(f'File not found: {os.path.basename(file_path)}. Available files: {", ".join(available_files) if available_files else "None"}', 'error')
             return redirect(url_for('main.index'))
 
+        logger.info(f"Sending file: {file_path}")
         return send_file(file_path, as_attachment=True)
 
     except Exception as e:
@@ -282,3 +322,127 @@ def download_file(filename):
         logger.error(f"Error downloading file: {str(e)}")
         flash(f'Error downloading file: {str(e)}', 'error')
         return redirect(url_for('main.index'))
+
+
+@main_bp.route('/debug/files')
+def debug_files():
+    """Debug route to show available files."""
+    try:
+        transcription_folder = current_app.config['TRANSCRIPTION_FOLDER']
+
+        if not os.path.exists(transcription_folder):
+            return jsonify({
+                'error': 'Transcription folder does not exist',
+                'folder': transcription_folder
+            })
+
+        files = os.listdir(transcription_folder)
+        file_details = []
+
+        for file in files:
+            file_path = os.path.join(transcription_folder, file)
+            file_details.append({
+                'name': file,
+                'size': os.path.getsize(file_path),
+                'modified': os.path.getmtime(file_path)
+            })
+
+        return jsonify({
+            'folder': transcription_folder,
+            'files': file_details,
+            'count': len(files)
+        })
+
+    except Exception as e:
+        return jsonify({'error': str(e)})
+
+
+@main_bp.route('/test-result')
+def test_result():
+    """Test route to verify the enhanced result template works."""
+    try:
+        from app.utils import TranscriptionResult, TranscriptionSegment, WordTimestamp
+
+        # Create test data
+        word1 = WordTimestamp(word="Hello", start=0.0, end=0.5)
+        word2 = WordTimestamp(word="world", start=0.6, end=1.0)
+
+        segment = TranscriptionSegment(
+            text="Hello world",
+            start=0.0,
+            end=1.0,
+            words=[word1, word2]
+        )
+
+        result = TranscriptionResult(
+            text="Hello world",
+            segments=[segment],
+            language="en",
+            duration=1.0,
+            method_used="test",
+            model_used="test_model",
+            processing_time=0.1,
+            file_size_mb=1.0
+        )
+
+        return render_template(
+            'enhanced_result.html',
+            result=result,
+            filename="test_file.wav"
+        )
+
+    except Exception as e:
+        logger.error(f"Error in test result: {str(e)}")
+        return f"Error: {str(e)}"
+
+
+@main_bp.route('/files')
+def list_files():
+    """List all available transcription files for download."""
+    try:
+        transcription_folder = current_app.config['TRANSCRIPTION_FOLDER']
+
+        if not os.path.exists(transcription_folder):
+            flash('No transcription files found.', 'info')
+            return redirect(url_for('main.index'))
+
+        files = []
+        for filename in os.listdir(transcription_folder):
+            file_path = os.path.join(transcription_folder, filename)
+            if os.path.isfile(file_path):
+                file_info = {
+                    'name': filename,
+                    'size': os.path.getsize(file_path),
+                    'modified': os.path.getmtime(file_path),
+                    'extension': os.path.splitext(filename)[1].lower()
+                }
+                files.append(file_info)
+
+        # Sort by modification time (newest first)
+        files.sort(key=lambda x: x['modified'], reverse=True)
+
+        return render_template('files_list.html', files=files)
+
+    except Exception as e:
+        logger.error(f"Error listing files: {str(e)}")
+        flash(f'Error listing files: {str(e)}', 'error')
+        return redirect(url_for('main.index'))
+
+
+@main_bp.route('/download-direct/<path:filename>')
+def download_direct(filename):
+    """Direct download of any file in the transcriptions folder."""
+    try:
+        safe_filename = secure_filename(filename)
+        file_path = os.path.join(current_app.config['TRANSCRIPTION_FOLDER'], safe_filename)
+
+        if not os.path.exists(file_path):
+            flash(f'File not found: {safe_filename}', 'error')
+            return redirect(url_for('main.list_files'))
+
+        return send_file(file_path, as_attachment=True)
+
+    except Exception as e:
+        logger.error(f"Error downloading file directly: {str(e)}")
+        flash(f'Error downloading file: {str(e)}', 'error')
+        return redirect(url_for('main.list_files'))

@@ -745,24 +745,33 @@ def transcribe_audio(file_path: str, transcription_folder: str) -> Tuple[str, st
             f.write(result.text)
 
         # Save enhanced formats if timestamps are available
-        if result.segments and ENABLE_TIMESTAMPS:
-            # Save JSON with full details
-            json_filename = f"{base_name}_detailed.json"
-            json_path = os.path.join(transcription_folder, json_filename)
-            with open(json_path, 'w', encoding='utf-8') as f:
-                json.dump(result.to_dict(), f, indent=2, ensure_ascii=False)
+        if result.segments and len(result.segments) > 0:
+            try:
+                # Save JSON with full details
+                json_filename = f"{base_name}_detailed.json"
+                json_path = os.path.join(transcription_folder, json_filename)
+                with open(json_path, 'w', encoding='utf-8') as f:
+                    json.dump(result.to_dict(), f, indent=2, ensure_ascii=False)
+                logger.info(f"Saved JSON file: {json_path}")
 
-            # Save SRT subtitle format
-            srt_filename = f"{base_name}.srt"
-            srt_path = os.path.join(transcription_folder, srt_filename)
-            with open(srt_path, 'w', encoding='utf-8') as f:
-                f.write(result.to_srt())
+                # Save SRT subtitle format
+                srt_filename = f"{base_name}.srt"
+                srt_path = os.path.join(transcription_folder, srt_filename)
+                with open(srt_path, 'w', encoding='utf-8') as f:
+                    f.write(result.to_srt())
+                logger.info(f"Saved SRT file: {srt_path}")
 
-            # Save VTT subtitle format
-            vtt_filename = f"{base_name}.vtt"
-            vtt_path = os.path.join(transcription_folder, vtt_filename)
-            with open(vtt_path, 'w', encoding='utf-8') as f:
-                f.write(result.to_vtt())
+                # Save VTT subtitle format
+                vtt_filename = f"{base_name}.vtt"
+                vtt_path = os.path.join(transcription_folder, vtt_filename)
+                with open(vtt_path, 'w', encoding='utf-8') as f:
+                    f.write(result.to_vtt())
+                logger.info(f"Saved VTT file: {vtt_path}")
+
+            except Exception as e:
+                logger.error(f"Failed to save enhanced formats: {e}")
+        else:
+            logger.info("No segments available, skipping enhanced format export")
 
         logger.info(f"Transcription saved to: {transcription_path}")
         return result.text, transcription_path, transcription_filename

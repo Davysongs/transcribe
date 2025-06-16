@@ -10,6 +10,10 @@
     <div class="container">
         <h1>Audio Transcription Tool</h1>
         <p class="description">Upload an audio file and get it transcribed to text.</p>
+
+        <div class="navigation-links">
+            <a href="{{ url_for('main.list_files') }}" class="nav-link">📁 View Previous Transcriptions</a>
+        </div>
         
         {% with messages = get_flashed_messages(with_categories=true) %}
             {% if messages %}
@@ -55,7 +59,7 @@
                 </button>
 
                 <div class="legacy-option">
-                    <a href="#" id="basic-transcribe" class="basic-link">Use Basic Transcription</a>
+                    <a href="#" id="basic-transcribe" class="basic-link">Use Basic Transcription (Fallback)</a>
                 </div>
             </form>
 

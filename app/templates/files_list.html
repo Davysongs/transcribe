@@ -1,0 +1,160 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Available Transcription Files</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}">
+</head>
+<body>
+    <div class="container">
+        <h1>Available Transcription Files</h1>
+        <p class="description">Download any of your previously transcribed files.</p>
+        
+        {% if files %}
+        <div class="files-container">
+            <div class="files-grid">
+                {% for file in files %}
+                <div class="file-item">
+                    <div class="file-info">
+                        <h3 class="file-name">{{ file.name }}</h3>
+                        <div class="file-details">
+                            <span class="file-size">{{ "%.1f"|format(file.size / 1024) }} KB</span>
+                            <span class="file-type">{{ file.extension.upper() }}</span>
+                            <span class="file-date">{{ file.modified | timestamp_to_date }}</span>
+                        </div>
+                    </div>
+                    <div class="file-actions">
+                        <a href="{{ url_for('main.download_direct', filename=file.name) }}" 
+                           class="download-btn-small">
+                            📥 Download
+                        </a>
+                    </div>
+                </div>
+                {% endfor %}
+            </div>
+        </div>
+        {% else %}
+        <div class="no-files">
+            <p>No transcription files found.</p>
+            <p>Upload and transcribe an audio file to see results here.</p>
+        </div>
+        {% endif %}
+        
+        <div class="actions">
+            <a href="{{ url_for('main.index') }}" class="back-btn">Transcribe New File</a>
+            <a href="/debug/files" class="debug-btn">Debug Info</a>
+        </div>
+    </div>
+    
+    <style>
+        .files-container {
+            margin: 2rem 0;
+        }
+        
+        .files-grid {
+            display: grid;
+            gap: 1rem;
+        }
+        
+        .file-item {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            padding: 1rem;
+            background-color: #f7fafc;
+            border-radius: 8px;
+            border: 1px solid #e2e8f0;
+        }
+        
+        .file-info {
+            flex: 1;
+        }
+        
+        .file-name {
+            margin: 0 0 0.5rem 0;
+            font-size: 1rem;
+            color: #2d3748;
+        }
+        
+        .file-details {
+            display: flex;
+            gap: 1rem;
+            font-size: 0.8rem;
+            color: #718096;
+        }
+        
+        .file-type {
+            background-color: #4299e1;
+            color: white;
+            padding: 0.2rem 0.5rem;
+            border-radius: 3px;
+            font-weight: bold;
+        }
+        
+        .download-btn-small {
+            padding: 0.5rem 1rem;
+            background-color: #48bb78;
+            color: white;
+            text-decoration: none;
+            border-radius: 4px;
+            font-size: 0.9rem;
+            transition: background-color 0.3s;
+        }
+        
+        .download-btn-small:hover {
+            background-color: #38a169;
+            color: white;
+            text-decoration: none;
+        }
+        
+        .no-files {
+            text-align: center;
+            padding: 3rem;
+            color: #718096;
+        }
+        
+        .debug-btn {
+            margin-left: 1rem;
+            padding: 0.5rem 1rem;
+            background-color: #718096;
+            color: white;
+            text-decoration: none;
+            border-radius: 4px;
+            font-size: 0.9rem;
+        }
+        
+        .debug-btn:hover {
+            background-color: #4a5568;
+            color: white;
+            text-decoration: none;
+        }
+        
+        @media (max-width: 768px) {
+            .file-item {
+                flex-direction: column;
+                align-items: stretch;
+                gap: 1rem;
+            }
+            
+            .file-details {
+                flex-wrap: wrap;
+            }
+        }
+    </style>
+    
+    <script>
+        // Add timestamp formatting
+        document.addEventListener('DOMContentLoaded', function() {
+            const dateElements = document.querySelectorAll('.file-date');
+            dateElements.forEach(element => {
+                const timestamp = parseFloat(element.textContent);
+                if (!isNaN(timestamp)) {
+                    const date = new Date(timestamp * 1000);
+                    element.textContent = date.toLocaleString();
+                }
+            });
+        });
+    </script>
+</body>
+</html>

@@ -150,6 +150,28 @@ h1 {
     margin-top: 5px;
 }
 
+.navigation-links {
+    margin: 1rem 0 2rem 0;
+    text-align: center;
+}
+
+.nav-link {
+    display: inline-block;
+    padding: 0.5rem 1rem;
+    background-color: #e2e8f0;
+    color: #4a5568;
+    text-decoration: none;
+    border-radius: 4px;
+    font-size: 0.9rem;
+    transition: background-color 0.3s;
+}
+
+.nav-link:hover {
+    background-color: #cbd5e0;
+    color: #2d3748;
+    text-decoration: none;
+}
+
 .submit-btn {
     padding: 12px 30px;
     background-color: #48bb78;
