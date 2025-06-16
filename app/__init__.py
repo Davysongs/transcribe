@@ -26,6 +26,29 @@ def create_app():
     os.makedirs(app.config['CACHE_FOLDER'], exist_ok=True)
     os.makedirs(app.config['CHUNKS_FOLDER'], exist_ok=True)
 
+    # Register custom template filters
+    @app.template_filter('timestamp_to_date')
+    def timestamp_to_date(timestamp):
+        """Convert Unix timestamp to readable date."""
+        try:
+            from datetime import datetime
+            return datetime.fromtimestamp(timestamp).strftime('%Y-%m-%d %H:%M:%S')
+        except (ValueError, TypeError):
+            return 'Unknown'
+
+    @app.template_filter('file_size')
+    def file_size_filter(size_bytes):
+        """Convert bytes to human readable format."""
+        try:
+            if size_bytes < 1024:
+                return f"{size_bytes} B"
+            elif size_bytes < 1024 * 1024:
+                return f"{size_bytes / 1024:.1f} KB"
+            else:
+                return f"{size_bytes / (1024 * 1024):.1f} MB"
+        except (ValueError, TypeError):
+            return 'Unknown'
+
     from app.routes import main_bp
     app.register_blueprint(main_bp)
 

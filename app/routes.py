@@ -201,33 +201,47 @@ def enhanced_upload():
             flash(str(e), 'error')
             return redirect(url_for('main.index'))
 
-        # Enhanced transcription
+        # Enhanced transcription - use the backward-compatible function that saves files
         try:
-            result = transcribe_audio_enhanced(
-                file_path,
-                current_app.config['TRANSCRIPTION_FOLDER'],
-                current_app.config['CHUNKS_FOLDER']
-            )
-            logger.info(f"Enhanced transcription completed successfully for {original_filename}")
-        except Exception as transcription_error:
-            logger.error(f"Enhanced transcription failed: {transcription_error}")
-            # Fallback to basic transcription
-            logger.info("Falling back to basic transcription")
+            logger.info(f"Starting enhanced transcription for {original_filename}")
             text, transcription_path, transcription_filename = transcribe_audio(
                 file_path,
                 current_app.config['TRANSCRIPTION_FOLDER']
             )
 
-            # Create a basic result object for compatibility
-            from app.utils import TranscriptionResult, TranscriptionSegment
-            result = TranscriptionResult(
-                text=text,
-                segments=[TranscriptionSegment(text=text, start=0.0, end=0.0)],
-                method_used="fallback",
-                model_used="unknown",
-                processing_time=0.0,
-                file_size_mb=os.path.getsize(file_path) / (1024 * 1024) if os.path.exists(file_path) else 0.0
-            )
+            # The transcribe_audio function now returns enhanced results and saves all formats
+            # We need to reconstruct the result object for the template
+            base_name = os.path.splitext(transcription_filename)[0]
+
+            # Try to load the detailed JSON file if it exists
+            json_path = os.path.join(current_app.config['TRANSCRIPTION_FOLDER'], f"{base_name}_detailed.json")
+            if os.path.exists(json_path):
+                import json
+                with open(json_path, 'r', encoding='utf-8') as f:
+                    result_data = json.load(f)
+
+                from app.utils import TranscriptionResult
+                result = TranscriptionResult(**result_data)
+                logger.info(f"Loaded enhanced result from JSON: {json_path}")
+            else:
+                # Fallback to basic result
+                from app.utils import TranscriptionResult, TranscriptionSegment
+                result = TranscriptionResult(
+                    text=text,
+                    segments=[TranscriptionSegment(text=text, start=0.0, end=0.0)],
+                    method_used="basic",
+                    model_used="unknown",
+                    processing_time=0.0,
+                    file_size_mb=os.path.getsize(file_path) / (1024 * 1024) if os.path.exists(file_path) else 0.0
+                )
+                logger.info("Using basic result object (no enhanced JSON found)")
+
+            logger.info(f"Enhanced transcription completed successfully for {original_filename}")
+
+        except Exception as transcription_error:
+            logger.error(f"Transcription failed: {transcription_error}")
+            flash(f'Transcription failed: {str(transcription_error)}', 'error')
+            return redirect(url_for('main.index'))
 
         # Clean up uploaded file after successful transcription
         try:

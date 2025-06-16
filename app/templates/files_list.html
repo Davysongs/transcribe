@@ -19,7 +19,7 @@
                     <div class="file-info">
                         <h3 class="file-name">{{ file.name }}</h3>
                         <div class="file-details">
-                            <span class="file-size">{{ "%.1f"|format(file.size / 1024) }} KB</span>
+                            <span class="file-size">{{ file.size | file_size }}</span>
                             <span class="file-type">{{ file.extension.upper() }}</span>
                             <span class="file-date">{{ file.modified | timestamp_to_date }}</span>
                         </div>
@@ -143,18 +143,6 @@
         }
     </style>
     
-    <script>
-        // Add timestamp formatting
-        document.addEventListener('DOMContentLoaded', function() {
-            const dateElements = document.querySelectorAll('.file-date');
-            dateElements.forEach(element => {
-                const timestamp = parseFloat(element.textContent);
-                if (!isNaN(timestamp)) {
-                    const date = new Date(timestamp * 1000);
-                    element.textContent = date.toLocaleString();
-                }
-            });
-        });
-    </script>
+
 </body>
 </html>
