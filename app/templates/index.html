@@ -22,15 +22,26 @@
         {% endwith %}
         
         <div class="upload-container">
-            <form action="{{ url_for('main.upload_file') }}" method="post" enctype="multipart/form-data">
+            <form action="{{ url_for('main.upload_file') }}" method="post" enctype="multipart/form-data" id="upload-form">
                 <div class="file-input">
                     <label for="audio_file">Choose an audio file</label>
-                    <input type="file" id="audio_file" name="audio_file" accept=".mp3,.wav,.m4a,.flac,.ogg">
+                    <input type="file" id="audio_file" name="audio_file" accept=".mp3,.wav,.m4a,.flac,.ogg,.webm,.mp4">
                     <p class="file-name" id="file-name">No file selected</p>
+                    <p class="file-size" id="file-size"></p>
                 </div>
-                
-                <button type="submit" class="submit-btn">Transcribe</button>
+
+                <button type="submit" class="submit-btn" id="submit-btn">
+                    <span class="btn-text">Transcribe</span>
+                    <span class="btn-loading" style="display: none;">Processing...</span>
+                </button>
             </form>
+
+            <div class="progress-container" id="progress-container" style="display: none;">
+                <div class="progress-bar">
+                    <div class="progress-fill" id="progress-fill"></div>
+                </div>
+                <p class="progress-text" id="progress-text">Processing your audio file...</p>
+            </div>
         </div>
         
         <div class="supported-formats">
@@ -41,8 +52,59 @@
                 <li>.m4a</li>
                 <li>.flac</li>
                 <li>.ogg</li>
+                <li>.webm</li>
+                <li>.mp4</li>
             </ul>
         </div>
+
+        {% if methods_status %}
+        <div class="transcription-status">
+            <h3>Transcription Service Status:</h3>
+            <div class="status-grid">
+                {% if methods_status.openai_api.available %}
+                    <div class="status-item available">
+                        <span class="status-icon">✓</span>
+                        <span>OpenAI API (Cloud)</span>
+                    </div>
+                {% elif methods_status.openai_api.package_installed %}
+                    <div class="status-item configured">
+                        <span class="status-icon">⚠</span>
+                        <span>OpenAI API (API Key Required)</span>
+                    </div>
+                {% else %}
+                    <div class="status-item unavailable">
+                        <span class="status-icon">✗</span>
+                        <span>OpenAI API (Not Installed)</span>
+                    </div>
+                {% endif %}
+
+                {% if methods_status.faster_whisper.available %}
+                    <div class="status-item available">
+                        <span class="status-icon">✓</span>
+                        <span>Faster Whisper (Local)</span>
+                    </div>
+                {% else %}
+                    <div class="status-item unavailable">
+                        <span class="status-icon">✗</span>
+                        <span>Faster Whisper (Not Installed)</span>
+                    </div>
+                {% endif %}
+
+                {% if methods_status.openai_whisper.available %}
+                    <div class="status-item available">
+                        <span class="status-icon">✓</span>
+                        <span>OpenAI Whisper (Local)</span>
+                    </div>
+                {% else %}
+                    <div class="status-item unavailable">
+                        <span class="status-icon">✗</span>
+                        <span>OpenAI Whisper (Not Installed)</span>
+                    </div>
+                {% endif %}
+            </div>
+            <p class="current-method">Current method: <strong>{{ methods_status.current_method }}</strong></p>
+        </div>
+        {% endif %}
     </div>
     
     <script src="{{ url_for('static', filename='js/scripts.js') }}"></script>
