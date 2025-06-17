@@ -36,9 +36,19 @@ except ImportError:
 
 try:
     from pydub import AudioSegment
-    PYDUB_AVAILABLE = True
+    # Test if pydub can actually work (requires ffmpeg)
+    try:
+        # Try to create a simple audio segment to test ffmpeg availability
+        test_segment = AudioSegment.silent(duration=100)  # 100ms of silence
+        PYDUB_AVAILABLE = True
+        PYDUB_FUNCTIONAL = True
+    except Exception as e:
+        PYDUB_AVAILABLE = True
+        PYDUB_FUNCTIONAL = False
+        logging.warning(f"Pydub available but not functional (missing ffmpeg): {e}")
 except ImportError:
     PYDUB_AVAILABLE = False
+    PYDUB_FUNCTIONAL = False
     logging.warning("Pydub not available. Install with: pip install pydub")
 
 try:
@@ -187,8 +197,8 @@ def allowed_file(filename):
 def get_audio_duration(file_path: str) -> float:
     """Get the duration of an audio file in seconds with improved error handling."""
     try:
-        # Try pydub first as it's more reliable for various formats
-        if PYDUB_AVAILABLE:
+        # Try pydub first if it's functional (has ffmpeg)
+        if PYDUB_AVAILABLE and PYDUB_FUNCTIONAL:
             try:
                 audio = AudioSegment.from_file(file_path)
                 duration = len(audio) / 1000.0  # Convert milliseconds to seconds
@@ -219,10 +229,21 @@ def get_audio_duration(file_path: str) -> float:
                 except Exception as e2:
                     logger.warning(f"Librosa file loading also failed: {e2}")
 
-        # Final fallback: estimate based on file size
+        # Final fallback: estimate based on file size and format
         file_size_mb = os.path.getsize(file_path) / (1024 * 1024)
-        # More conservative estimate: 1MB ≈ 45 seconds for compressed audio
-        estimated_duration = file_size_mb * 45
+        file_ext = os.path.splitext(file_path)[1].lower()
+
+        # Different estimates based on file format
+        if file_ext in ['.mp3', '.m4a', '.ogg']:
+            # Compressed formats: ~1MB per minute at standard quality
+            estimated_duration = file_size_mb * 60
+        elif file_ext in ['.wav', '.flac']:
+            # Uncompressed formats: ~10MB per minute at CD quality
+            estimated_duration = file_size_mb * 6
+        else:
+            # Default estimate
+            estimated_duration = file_size_mb * 45
+
         logger.warning(f"Using file size estimation for duration: {estimated_duration:.2f}s")
         return estimated_duration
 
@@ -261,6 +282,64 @@ def estimate_chunk_file_size(duration_seconds: float, original_file_size_mb: flo
         return duration_seconds * 0.1
 
 
+def create_simple_chunks_by_size(file_path: str, chunk_folder: str, method: str) -> List[Tuple[str, float, float]]:
+    """
+    Create chunks by splitting the file into equal-sized parts when audio libraries aren't available.
+    This is a fallback method that creates binary chunks.
+    """
+    try:
+        file_size_mb = os.path.getsize(file_path) / (1024 * 1024)
+        duration = get_audio_duration(file_path)
+
+        # Calculate target chunk size
+        if method == 'openai_api':
+            target_chunk_size_mb = min(OPENAI_MAX_FILE_SIZE_MB * 0.9, 20)  # 90% of limit, max 20MB
+        else:
+            target_chunk_size_mb = 50  # 50MB chunks for local processing
+
+        if file_size_mb <= target_chunk_size_mb:
+            logger.info(f"File size ({file_size_mb:.1f}MB) is within limits, no chunking needed")
+            return [(file_path, 0.0, duration)]
+
+        # Calculate number of chunks needed
+        num_chunks = math.ceil(file_size_mb / target_chunk_size_mb)
+        chunk_size_bytes = os.path.getsize(file_path) // num_chunks
+
+        logger.info(f"Creating {num_chunks} binary chunks of ~{chunk_size_bytes / (1024*1024):.1f}MB each")
+
+        chunks = []
+        file_ext = os.path.splitext(file_path)[1]
+
+        with open(file_path, 'rb') as source_file:
+            for i in range(num_chunks):
+                chunk_filename = f"chunk_{i:03d}{file_ext}"
+                chunk_path = os.path.join(chunk_folder, chunk_filename)
+
+                # Calculate time ranges (approximate)
+                start_time = (duration / num_chunks) * i
+                end_time = min((duration / num_chunks) * (i + 1), duration)
+
+                # Read and write chunk
+                chunk_data = source_file.read(chunk_size_bytes)
+                if not chunk_data:
+                    break
+
+                with open(chunk_path, 'wb') as chunk_file:
+                    chunk_file.write(chunk_data)
+
+                # Verify chunk size
+                actual_chunk_size_mb = os.path.getsize(chunk_path) / (1024 * 1024)
+                logger.debug(f"Created chunk {i}: {actual_chunk_size_mb:.1f}MB ({start_time:.1f}s - {end_time:.1f}s)")
+
+                chunks.append((chunk_path, start_time, end_time))
+
+        return chunks
+
+    except Exception as e:
+        logger.error(f"Failed to create simple chunks: {e}")
+        raise
+
+
 def create_audio_chunks(file_path: str, chunk_folder: str, method: str = 'openai_api') -> List[Tuple[str, float, float]]:
     """
     Split audio file into chunks for processing with method-specific optimization.
@@ -268,9 +347,12 @@ def create_audio_chunks(file_path: str, chunk_folder: str, method: str = 'openai
     Returns:
         List of tuples (chunk_file_path, start_time, end_time)
     """
-    if not AUDIO_PROCESSING_AVAILABLE and not PYDUB_AVAILABLE:
-        logger.warning("No audio processing library available. Cannot chunk audio.")
-        return [(file_path, 0.0, get_audio_duration(file_path))]
+    # Check if we have functional audio processing libraries
+    has_functional_audio_libs = (AUDIO_PROCESSING_AVAILABLE or (PYDUB_AVAILABLE and PYDUB_FUNCTIONAL))
+
+    if not has_functional_audio_libs:
+        logger.warning("No functional audio processing libraries available. Using simple binary chunking.")
+        return create_simple_chunks_by_size(file_path, chunk_folder, method)
 
     try:
         duration = get_audio_duration(file_path)
@@ -300,7 +382,7 @@ def create_audio_chunks(file_path: str, chunk_folder: str, method: str = 'openai
 
         logger.info(f"Splitting audio file into chunks (duration: {duration:.1f}s, size: {file_size_mb:.1f}MB)")
 
-        if PYDUB_AVAILABLE:
+        if PYDUB_AVAILABLE and PYDUB_FUNCTIONAL:
             # Use pydub for chunking (more reliable for various formats)
             try:
                 audio = AudioSegment.from_file(file_path)
@@ -341,7 +423,9 @@ def create_audio_chunks(file_path: str, chunk_folder: str, method: str = 'openai
 
             except Exception as e:
                 logger.error(f"Pydub chunking failed: {e}")
-                raise
+                # Fall back to simple chunking
+                logger.info("Falling back to simple binary chunking")
+                return create_simple_chunks_by_size(file_path, chunk_folder, method)
 
         elif AUDIO_PROCESSING_AVAILABLE:
             # Use librosa for chunking
@@ -369,18 +453,26 @@ def create_audio_chunks(file_path: str, chunk_folder: str, method: str = 'openai
 
             except Exception as e:
                 logger.error(f"Librosa chunking failed: {e}")
-                raise
+                # Fall back to simple chunking
+                logger.info("Falling back to simple binary chunking")
+                return create_simple_chunks_by_size(file_path, chunk_folder, method)
 
         logger.info(f"Created {len(chunks)} audio chunks")
         return chunks
 
     except Exception as e:
         logger.error(f"Failed to create audio chunks: {e}")
-        # Fallback to processing the whole file if it's small enough
-        file_size_mb = os.path.getsize(file_path) / (1024 * 1024)
-        if method == 'openai_api' and file_size_mb > OPENAI_MAX_FILE_SIZE_MB:
-            raise ValueError(f"File too large ({file_size_mb:.1f}MB) for OpenAI API and chunking failed")
-        return [(file_path, 0.0, get_audio_duration(file_path))]
+        # Try simple chunking as final fallback
+        try:
+            logger.info("Attempting simple binary chunking as final fallback")
+            return create_simple_chunks_by_size(file_path, chunk_folder, method)
+        except Exception as e2:
+            logger.error(f"Simple chunking also failed: {e2}")
+            # Final fallback to processing the whole file if it's small enough
+            file_size_mb = os.path.getsize(file_path) / (1024 * 1024)
+            if method == 'openai_api' and file_size_mb > OPENAI_MAX_FILE_SIZE_MB:
+                raise ValueError(f"File too large ({file_size_mb:.1f}MB) for OpenAI API and all chunking methods failed")
+            return [(file_path, 0.0, get_audio_duration(file_path))]
 
 def save_upload(file, upload_folder):
     """Save an uploaded file with a secure filename."""

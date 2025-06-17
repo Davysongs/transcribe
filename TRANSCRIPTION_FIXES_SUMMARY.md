@@ -11,18 +11,21 @@
 - Enhanced chunking logic to respect API limits
 - Added method-specific chunk size calculation
 - Compressed chunks to MP3 format (128k bitrate) for OpenAI API to reduce file size
+- **NEW**: Binary chunking fallback when audio libraries fail
 
 ### 2. Audio Duration Detection Failures
 **Problem**: librosa was failing to read MP3 files, causing duration detection errors.
 
 **Solutions Implemented**:
 - Improved `get_audio_duration()` function with multiple fallback strategies:
-  1. Try pydub first (more reliable for various formats)
+  1. Try pydub first (more reliable for various formats) - **only if functional**
   2. Fallback to librosa with better error handling
   3. Estimate duration from file size if both fail
-  4. Conservative fallback estimates
+  4. Format-specific estimation (MP3, WAV, FLAC)
+  5. Conservative fallback estimates
 - Added debug logging for duration detection methods
 - Better error handling for corrupted or unsupported audio files
+- **NEW**: Detection of pydub functionality (checks for ffmpeg availability)
 
 ### 3. Ineffective Chunking for Large Files
 **Problem**: Large files weren't being properly chunked before sending to OpenAI API.
@@ -35,6 +38,8 @@
 - Added `estimate_chunk_file_size()` to predict chunk sizes
 - Implemented dynamic chunk size adjustment for OpenAI API
 - Added chunk file size validation
+- **NEW**: `create_simple_chunks_by_size()` - Binary chunking fallback when audio libraries fail
+- **NEW**: Automatic fallback to binary chunking when pydub/librosa fail
 
 ### 4. Poor Error Handling for Failed Chunks
 **Problem**: When chunks failed, the entire transcription would fail.
@@ -46,11 +51,22 @@
 - Maintained timing information even for failed segments
 - Better error categorization and specific handling
 
-### 5. Configuration Improvements
+### 5. Missing System Dependencies (ffmpeg/ffprobe)
+**Problem**: System was missing ffmpeg/ffprobe, causing pydub to fail and preventing audio chunking.
+
+**Solutions Implemented**:
+- Added `PYDUB_FUNCTIONAL` flag to detect if pydub can actually work (requires ffmpeg)
+- Enhanced dependency detection and graceful fallback
+- Created `install_dependencies.sh` script for easy system dependency installation
+- Added `diagnose_audio_issues.py` for comprehensive dependency checking
+- Binary chunking fallback that works without any audio processing libraries
+
+### 6. Configuration Improvements
 **New Constants Added**:
 ```python
 OPENAI_MAX_FILE_SIZE_MB = 25  # OpenAI API limit
 OPENAI_MAX_CHUNK_SIZE_SECONDS = 600  # 10 minutes recommended
+PYDUB_FUNCTIONAL = True/False  # Whether pydub can actually work
 ```
 
 **Updated Defaults**:
@@ -118,6 +134,8 @@ def transcribe_chunk(chunk_info, method: str, model: str, retry_count: int = 0):
 - For files > 200MB using local methods: Chunking recommended for memory efficiency
 - Failed chunks will be marked as `[TRANSCRIPTION FAILED FOR Xs SEGMENT]` in output
 - All output formats (TXT, SRT, VTT, JSON) will be generated with timing preserved
+- **NEW**: When ffmpeg is missing, binary chunking will be used automatically
+- **NEW**: The app now works even without audio processing dependencies
 
 ## Environment Variables
 
