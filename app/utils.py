@@ -77,10 +77,14 @@ OPENAI_API_KEY = os.environ.get('OPENAI_API_KEY')
 MAX_FILE_SIZE_MB = int(os.environ.get('MAX_FILE_SIZE_MB', '200'))
 
 # Audio processing configuration
-CHUNK_SIZE_SECONDS = int(os.environ.get('CHUNK_SIZE_SECONDS', '30'))
-CHUNK_OVERLAP_SECONDS = int(os.environ.get('CHUNK_OVERLAP_SECONDS', '2'))
+CHUNK_SIZE_SECONDS = int(os.environ.get('CHUNK_SIZE_SECONDS', '600'))  # 10 minutes for OpenAI API
+CHUNK_OVERLAP_SECONDS = int(os.environ.get('CHUNK_OVERLAP_SECONDS', '5'))
 ENABLE_TIMESTAMPS = os.environ.get('ENABLE_TIMESTAMPS', 'true').lower() == 'true'
 ENABLE_WORD_TIMESTAMPS = os.environ.get('ENABLE_WORD_TIMESTAMPS', 'false').lower() == 'true'
+
+# OpenAI API specific limits
+OPENAI_MAX_FILE_SIZE_MB = 25  # OpenAI API limit
+OPENAI_MAX_CHUNK_SIZE_SECONDS = 600  # 10 minutes recommended for quality
 
 # Performance configuration
 PARALLEL_PROCESSING = os.environ.get('PARALLEL_PROCESSING', 'true').lower() == 'true'
@@ -181,27 +185,85 @@ def allowed_file(filename):
 
 
 def get_audio_duration(file_path: str) -> float:
-    """Get the duration of an audio file in seconds."""
+    """Get the duration of an audio file in seconds with improved error handling."""
     try:
+        # Try pydub first as it's more reliable for various formats
+        if PYDUB_AVAILABLE:
+            try:
+                audio = AudioSegment.from_file(file_path)
+                duration = len(audio) / 1000.0  # Convert milliseconds to seconds
+                logger.debug(f"Audio duration (pydub): {duration:.2f}s")
+                return duration
+            except Exception as e:
+                logger.warning(f"Pydub failed to get duration: {e}")
+
+        # Fallback to librosa with better error handling
         if AUDIO_PROCESSING_AVAILABLE:
-            duration = librosa.get_duration(path=file_path)
-            return duration
-        elif PYDUB_AVAILABLE:
-            audio = AudioSegment.from_file(file_path)
-            return len(audio) / 1000.0  # Convert milliseconds to seconds
-        else:
-            # Fallback: estimate based on file size (very rough)
-            file_size_mb = os.path.getsize(file_path) / (1024 * 1024)
-            # Rough estimate: 1MB ≈ 1 minute for compressed audio
-            return file_size_mb * 60
+            try:
+                # Try with different backends
+                duration = librosa.get_duration(path=file_path)
+                logger.debug(f"Audio duration (librosa): {duration:.2f}s")
+                return duration
+            except Exception as e:
+                logger.warning(f"Librosa failed to get duration: {e}")
+
+                # Try loading the file first to check if it's readable
+                try:
+                    y, sr = librosa.load(file_path, sr=None, duration=1.0)  # Load just 1 second
+                    # If successful, estimate full duration from file size
+                    file_size = os.path.getsize(file_path)
+                    sample_size = len(y) * 4  # Approximate bytes per sample
+                    estimated_duration = file_size / sample_size
+                    logger.debug(f"Audio duration (estimated): {estimated_duration:.2f}s")
+                    return estimated_duration
+                except Exception as e2:
+                    logger.warning(f"Librosa file loading also failed: {e2}")
+
+        # Final fallback: estimate based on file size
+        file_size_mb = os.path.getsize(file_path) / (1024 * 1024)
+        # More conservative estimate: 1MB ≈ 45 seconds for compressed audio
+        estimated_duration = file_size_mb * 45
+        logger.warning(f"Using file size estimation for duration: {estimated_duration:.2f}s")
+        return estimated_duration
+
     except Exception as e:
-        logger.warning(f"Could not determine audio duration: {e}")
-        return 0.0
+        logger.error(f"Could not determine audio duration: {e}")
+        # Return a reasonable default based on file size
+        try:
+            file_size_mb = os.path.getsize(file_path) / (1024 * 1024)
+            return file_size_mb * 45  # Conservative estimate
+        except:
+            return 300.0  # 5 minutes default
 
 
-def create_audio_chunks(file_path: str, chunk_folder: str) -> List[Tuple[str, float, float]]:
+def get_chunk_size_for_method(method: str, file_size_mb: float) -> int:
+    """Determine optimal chunk size based on transcription method and file size."""
+    if method == 'openai_api':
+        # OpenAI API has a 25MB limit, so we need smaller chunks for large files
+        if file_size_mb > 100:
+            return 300  # 5 minutes for very large files
+        elif file_size_mb > 50:
+            return 480  # 8 minutes for large files
+        else:
+            return OPENAI_MAX_CHUNK_SIZE_SECONDS  # 10 minutes for smaller files
+    else:
+        # Local methods can handle larger chunks
+        return CHUNK_SIZE_SECONDS
+
+
+def estimate_chunk_file_size(duration_seconds: float, original_file_size_mb: float, original_duration: float) -> float:
+    """Estimate the file size of a chunk based on duration."""
+    if original_duration > 0:
+        size_per_second = original_file_size_mb / original_duration
+        return duration_seconds * size_per_second
+    else:
+        # Fallback estimate: ~0.1MB per second for compressed audio
+        return duration_seconds * 0.1
+
+
+def create_audio_chunks(file_path: str, chunk_folder: str, method: str = 'openai_api') -> List[Tuple[str, float, float]]:
     """
-    Split audio file into chunks for processing.
+    Split audio file into chunks for processing with method-specific optimization.
 
     Returns:
         List of tuples (chunk_file_path, start_time, end_time)
@@ -212,68 +274,112 @@ def create_audio_chunks(file_path: str, chunk_folder: str) -> List[Tuple[str, fl
 
     try:
         duration = get_audio_duration(file_path)
-        if duration <= CHUNK_SIZE_SECONDS:
+        file_size_mb = os.path.getsize(file_path) / (1024 * 1024)
+
+        # Get method-specific chunk size
+        chunk_size = get_chunk_size_for_method(method, file_size_mb)
+
+        # For OpenAI API, ensure chunks don't exceed size limit
+        if method == 'openai_api':
+            # Estimate chunk size and adjust if needed
+            estimated_chunk_size = estimate_chunk_file_size(chunk_size, file_size_mb, duration)
+            while estimated_chunk_size > OPENAI_MAX_FILE_SIZE_MB and chunk_size > 60:
+                chunk_size = int(chunk_size * 0.8)  # Reduce by 20%
+                estimated_chunk_size = estimate_chunk_file_size(chunk_size, file_size_mb, duration)
+
+            logger.info(f"Using chunk size: {chunk_size}s (estimated {estimated_chunk_size:.1f}MB per chunk)")
+
+        if duration <= chunk_size and file_size_mb <= OPENAI_MAX_FILE_SIZE_MB:
             # File is small enough, no need to chunk
+            logger.info(f"File is small enough ({duration:.1f}s, {file_size_mb:.1f}MB), no chunking needed")
             return [(file_path, 0.0, duration)]
 
         chunks = []
         chunk_start = 0.0
         chunk_index = 0
 
-        logger.info(f"Splitting audio file into chunks (duration: {duration:.1f}s)")
+        logger.info(f"Splitting audio file into chunks (duration: {duration:.1f}s, size: {file_size_mb:.1f}MB)")
 
         if PYDUB_AVAILABLE:
             # Use pydub for chunking (more reliable for various formats)
-            audio = AudioSegment.from_file(file_path)
+            try:
+                audio = AudioSegment.from_file(file_path)
 
-            while chunk_start < duration:
-                chunk_end = min(chunk_start + CHUNK_SIZE_SECONDS, duration)
+                while chunk_start < duration:
+                    chunk_end = min(chunk_start + chunk_size, duration)
 
-                # Extract chunk
-                start_ms = int(chunk_start * 1000)
-                end_ms = int(chunk_end * 1000)
-                chunk_audio = audio[start_ms:end_ms]
+                    # Extract chunk
+                    start_ms = int(chunk_start * 1000)
+                    end_ms = int(chunk_end * 1000)
+                    chunk_audio = audio[start_ms:end_ms]
 
-                # Save chunk
-                chunk_filename = f"chunk_{chunk_index:03d}.wav"
-                chunk_path = os.path.join(chunk_folder, chunk_filename)
-                chunk_audio.export(chunk_path, format="wav")
+                    # Save chunk as MP3 to reduce file size for OpenAI API
+                    if method == 'openai_api':
+                        chunk_filename = f"chunk_{chunk_index:03d}.mp3"
+                        chunk_path = os.path.join(chunk_folder, chunk_filename)
+                        chunk_audio.export(chunk_path, format="mp3", bitrate="128k")
+                    else:
+                        chunk_filename = f"chunk_{chunk_index:03d}.wav"
+                        chunk_path = os.path.join(chunk_folder, chunk_filename)
+                        chunk_audio.export(chunk_path, format="wav")
 
-                chunks.append((chunk_path, chunk_start, chunk_end))
+                    # Verify chunk size for OpenAI API
+                    if method == 'openai_api':
+                        chunk_size_mb = os.path.getsize(chunk_path) / (1024 * 1024)
+                        if chunk_size_mb > OPENAI_MAX_FILE_SIZE_MB:
+                            logger.warning(f"Chunk {chunk_index} is {chunk_size_mb:.1f}MB, exceeds OpenAI limit")
+                            # Try to re-export with lower quality
+                            chunk_audio.export(chunk_path, format="mp3", bitrate="64k")
+                            chunk_size_mb = os.path.getsize(chunk_path) / (1024 * 1024)
+                            logger.info(f"Re-exported chunk {chunk_index} as {chunk_size_mb:.1f}MB")
 
-                # Move to next chunk with overlap
-                chunk_start += CHUNK_SIZE_SECONDS - CHUNK_OVERLAP_SECONDS
-                chunk_index += 1
+                    chunks.append((chunk_path, chunk_start, chunk_end))
+
+                    # Move to next chunk with overlap
+                    chunk_start += chunk_size - CHUNK_OVERLAP_SECONDS
+                    chunk_index += 1
+
+            except Exception as e:
+                logger.error(f"Pydub chunking failed: {e}")
+                raise
 
         elif AUDIO_PROCESSING_AVAILABLE:
             # Use librosa for chunking
-            y, sr = librosa.load(file_path, sr=None)
+            try:
+                y, sr = librosa.load(file_path, sr=None)
 
-            while chunk_start < duration:
-                chunk_end = min(chunk_start + CHUNK_SIZE_SECONDS, duration)
+                while chunk_start < duration:
+                    chunk_end = min(chunk_start + chunk_size, duration)
 
-                # Extract chunk
-                start_sample = int(chunk_start * sr)
-                end_sample = int(chunk_end * sr)
-                chunk_audio = y[start_sample:end_sample]
+                    # Extract chunk
+                    start_sample = int(chunk_start * sr)
+                    end_sample = int(chunk_end * sr)
+                    chunk_audio = y[start_sample:end_sample]
 
-                # Save chunk
-                chunk_filename = f"chunk_{chunk_index:03d}.wav"
-                chunk_path = os.path.join(chunk_folder, chunk_filename)
-                sf.write(chunk_path, chunk_audio, sr)
+                    # Save chunk
+                    chunk_filename = f"chunk_{chunk_index:03d}.wav"
+                    chunk_path = os.path.join(chunk_folder, chunk_filename)
+                    sf.write(chunk_path, chunk_audio, sr)
 
-                chunks.append((chunk_path, chunk_start, chunk_end))
+                    chunks.append((chunk_path, chunk_start, chunk_end))
 
-                # Move to next chunk with overlap
-                chunk_start += CHUNK_SIZE_SECONDS - CHUNK_OVERLAP_SECONDS
-                chunk_index += 1
+                    # Move to next chunk with overlap
+                    chunk_start += chunk_size - CHUNK_OVERLAP_SECONDS
+                    chunk_index += 1
+
+            except Exception as e:
+                logger.error(f"Librosa chunking failed: {e}")
+                raise
 
         logger.info(f"Created {len(chunks)} audio chunks")
         return chunks
 
     except Exception as e:
         logger.error(f"Failed to create audio chunks: {e}")
-        # Fallback to processing the whole file
+        # Fallback to processing the whole file if it's small enough
+        file_size_mb = os.path.getsize(file_path) / (1024 * 1024)
+        if method == 'openai_api' and file_size_mb > OPENAI_MAX_FILE_SIZE_MB:
+            raise ValueError(f"File too large ({file_size_mb:.1f}MB) for OpenAI API and chunking failed")
         return [(file_path, 0.0, get_audio_duration(file_path))]
 
 def save_upload(file, upload_folder):
@@ -289,21 +395,25 @@ def save_upload(file, upload_folder):
     return None, None
 
 def transcribe_with_openai_api(file_path: str, enable_timestamps: bool = True) -> TranscriptionResult:
-    """Transcribe audio using OpenAI's Whisper API with enhanced features."""
+    """Transcribe audio using OpenAI's Whisper API with enhanced features and size validation."""
     if not OPENAI_AVAILABLE:
         raise ImportError("OpenAI package not available. Install with: pip install openai")
 
     if not OPENAI_API_KEY:
         raise ValueError("OpenAI API key not found. Set OPENAI_API_KEY environment variable.")
 
+    # Validate file size before attempting transcription
+    file_size_mb = os.path.getsize(file_path) / (1024 * 1024)
+    if file_size_mb > OPENAI_MAX_FILE_SIZE_MB:
+        raise ValueError(f"File size ({file_size_mb:.1f}MB) exceeds OpenAI API limit ({OPENAI_MAX_FILE_SIZE_MB}MB). Use chunking instead.")
+
     try:
         client = openai.OpenAI(api_key=OPENAI_API_KEY)
 
-        logger.info(f"Transcribing file with OpenAI API: {file_path}")
+        logger.info(f"Transcribing file with OpenAI API: {file_path} ({file_size_mb:.1f}MB)")
         start_time = time.time()
 
         # Get file info
-        file_size_mb = os.path.getsize(file_path) / (1024 * 1024)
         duration = get_audio_duration(file_path)
 
         with open(file_path, "rb") as audio_file:
@@ -375,8 +485,13 @@ def transcribe_with_openai_api(file_path: str, enable_timestamps: bool = True) -
         return result
 
     except Exception as e:
-        logger.error(f"OpenAI API transcription failed: {str(e)}")
-        raise
+        error_msg = str(e)
+        if "413" in error_msg or "Maximum content size limit" in error_msg:
+            logger.error(f"OpenAI API file size limit exceeded: {error_msg}")
+            raise ValueError(f"File too large for OpenAI API. File size: {file_size_mb:.1f}MB, API limit: {OPENAI_MAX_FILE_SIZE_MB}MB")
+        else:
+            logger.error(f"OpenAI API transcription failed: {error_msg}")
+            raise
 
 
 def transcribe_with_faster_whisper(file_path: str, model_name: str = None) -> TranscriptionResult:
@@ -490,11 +605,20 @@ def get_optimal_model(file_size_mb: float) -> str:
         return LARGE_FILE_MODEL
 
 
-def transcribe_chunk(chunk_info: Tuple[str, float, float], method: str, model: str) -> TranscriptionResult:
-    """Transcribe a single audio chunk."""
+def transcribe_chunk(chunk_info: Tuple[str, float, float], method: str, model: str, retry_count: int = 0) -> TranscriptionResult:
+    """Transcribe a single audio chunk with retry logic."""
     chunk_path, start_offset, end_offset = chunk_info
+    max_retries = 2
 
     try:
+        # Validate chunk file size for OpenAI API
+        if method == 'openai_api':
+            chunk_size_mb = os.path.getsize(chunk_path) / (1024 * 1024)
+            if chunk_size_mb > OPENAI_MAX_FILE_SIZE_MB:
+                raise ValueError(f"Chunk file size ({chunk_size_mb:.1f}MB) exceeds OpenAI API limit ({OPENAI_MAX_FILE_SIZE_MB}MB)")
+
+        logger.debug(f"Transcribing chunk: {chunk_path} ({start_offset:.1f}s - {end_offset:.1f}s)")
+
         if method == 'openai_api':
             result = transcribe_with_openai_api(chunk_path, enable_timestamps=ENABLE_TIMESTAMPS)
         elif method == 'faster_whisper':
@@ -512,10 +636,25 @@ def transcribe_chunk(chunk_info: Tuple[str, float, float], method: str, model: s
                         word.start += start_offset
                         word.end += start_offset
 
+        logger.debug(f"Successfully transcribed chunk: {chunk_path}")
         return result
 
     except Exception as e:
-        logger.error(f"Failed to transcribe chunk {chunk_path}: {e}")
+        error_msg = str(e)
+        logger.error(f"Failed to transcribe chunk {chunk_path}: {error_msg}")
+
+        # Retry logic for certain errors
+        if retry_count < max_retries:
+            if "413" in error_msg or "Maximum content size limit" in error_msg:
+                logger.info(f"Chunk too large, attempting to re-create with smaller size (retry {retry_count + 1})")
+                # Try to recreate chunk with smaller duration if possible
+                # This would require additional logic to re-chunk the specific segment
+                pass
+            elif "timeout" in error_msg.lower() or "connection" in error_msg.lower():
+                logger.info(f"Network error, retrying chunk {chunk_path} (retry {retry_count + 1})")
+                time.sleep(2 ** retry_count)  # Exponential backoff
+                return transcribe_chunk(chunk_info, method, model, retry_count + 1)
+
         raise
 
 
@@ -580,16 +719,25 @@ def transcribe_audio_enhanced(file_path: str, transcription_folder: str, chunks_
 
             # Determine if we need chunking
             duration = get_audio_duration(file_path)
-            needs_chunking = (
-                duration > CHUNK_SIZE_SECONDS * 2 or  # File is significantly longer than chunk size
-                file_size_mb > 100  # Large file that might cause memory issues
-            )
+
+            # For OpenAI API, check both duration and file size limits
+            if method_name == 'openai_api':
+                needs_chunking = (
+                    file_size_mb > OPENAI_MAX_FILE_SIZE_MB or  # Exceeds API size limit
+                    duration > OPENAI_MAX_CHUNK_SIZE_SECONDS  # Exceeds recommended duration
+                )
+            else:
+                # For local methods, only chunk very large files
+                needs_chunking = (
+                    duration > CHUNK_SIZE_SECONDS * 2 or  # File is significantly longer than chunk size
+                    file_size_mb > 200  # Very large file that might cause memory issues
+                )
 
             if needs_chunking and (AUDIO_PROCESSING_AVAILABLE or PYDUB_AVAILABLE):
-                logger.info(f"File duration: {duration:.1f}s, using chunked processing")
+                logger.info(f"File duration: {duration:.1f}s, size: {file_size_mb:.1f}MB - using chunked processing")
                 result = transcribe_with_chunking(file_path, chunks_folder, method_name, optimal_model)
             else:
-                logger.info("Using direct transcription (no chunking needed)")
+                logger.info(f"Using direct transcription (duration: {duration:.1f}s, size: {file_size_mb:.1f}MB)")
                 if method_name == 'openai_api':
                     result = transcribe_with_openai_api(file_path, enable_timestamps=ENABLE_TIMESTAMPS)
                 elif method_name == 'faster_whisper':
@@ -624,9 +772,9 @@ def transcribe_with_chunking(file_path: str, chunks_folder: str, method: str, mo
     """Transcribe audio file using chunking for large files."""
     start_time = time.time()
 
-    # Create chunks
-    chunks = create_audio_chunks(file_path, chunks_folder)
-    logger.info(f"Processing {len(chunks)} chunks")
+    # Create chunks with method-specific optimization
+    chunks = create_audio_chunks(file_path, chunks_folder, method)
+    logger.info(f"Processing {len(chunks)} chunks using {method}")
 
     all_segments = []
     all_text_parts = []
@@ -651,9 +799,21 @@ def transcribe_with_chunking(file_path: str, chunks_folder: str, method: str, mo
                         chunk_result = future.result()
                         all_segments.extend(chunk_result.segments)
                         all_text_parts.append(chunk_result.text)
+                        logger.debug(f"Completed chunk {chunk_info[0]} ({chunk_info[1]:.1f}s - {chunk_info[2]:.1f}s)")
                     except Exception as e:
                         logger.error(f"Chunk {chunk_info[0]} failed: {e}")
-                        # Continue with other chunks
+                        # Add placeholder text for failed chunk to maintain timing
+                        chunk_duration = chunk_info[2] - chunk_info[1]
+                        placeholder_text = f"[TRANSCRIPTION FAILED FOR {chunk_duration:.1f}s SEGMENT]"
+                        all_text_parts.append(placeholder_text)
+
+                        # Add placeholder segment
+                        placeholder_segment = TranscriptionSegment(
+                            text=placeholder_text,
+                            start=chunk_info[1],
+                            end=chunk_info[2]
+                        )
+                        all_segments.append(placeholder_segment)
             else:
                 for future in as_completed(future_to_chunk):
                     chunk_info = future_to_chunk[future]
@@ -661,9 +821,21 @@ def transcribe_with_chunking(file_path: str, chunks_folder: str, method: str, mo
                         chunk_result = future.result()
                         all_segments.extend(chunk_result.segments)
                         all_text_parts.append(chunk_result.text)
+                        logger.debug(f"Completed chunk {chunk_info[0]} ({chunk_info[1]:.1f}s - {chunk_info[2]:.1f}s)")
                     except Exception as e:
                         logger.error(f"Chunk {chunk_info[0]} failed: {e}")
-                        # Continue with other chunks
+                        # Add placeholder text for failed chunk to maintain timing
+                        chunk_duration = chunk_info[2] - chunk_info[1]
+                        placeholder_text = f"[TRANSCRIPTION FAILED FOR {chunk_duration:.1f}s SEGMENT]"
+                        all_text_parts.append(placeholder_text)
+
+                        # Add placeholder segment
+                        placeholder_segment = TranscriptionSegment(
+                            text=placeholder_text,
+                            start=chunk_info[1],
+                            end=chunk_info[2]
+                        )
+                        all_segments.append(placeholder_segment)
     else:
         # Sequential processing
         logger.info("Using sequential processing")
@@ -675,9 +847,21 @@ def transcribe_with_chunking(file_path: str, chunks_folder: str, method: str, mo
                 chunk_result = transcribe_chunk(chunk_info, method, model)
                 all_segments.extend(chunk_result.segments)
                 all_text_parts.append(chunk_result.text)
+                logger.debug(f"Completed chunk {chunk_info[0]} ({chunk_info[1]:.1f}s - {chunk_info[2]:.1f}s)")
             except Exception as e:
                 logger.error(f"Chunk {chunk_info[0]} failed: {e}")
-                # Continue with other chunks
+                # Add placeholder text for failed chunk to maintain timing
+                chunk_duration = chunk_info[2] - chunk_info[1]
+                placeholder_text = f"[TRANSCRIPTION FAILED FOR {chunk_duration:.1f}s SEGMENT]"
+                all_text_parts.append(placeholder_text)
+
+                # Add placeholder segment
+                placeholder_segment = TranscriptionSegment(
+                    text=placeholder_text,
+                    start=chunk_info[1],
+                    end=chunk_info[2]
+                )
+                all_segments.append(placeholder_segment)
 
     # Clean up chunk files
     for chunk_path, _, _ in chunks:
